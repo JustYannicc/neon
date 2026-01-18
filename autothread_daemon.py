@@ -83,6 +83,14 @@ def get_current_general(chat_id: int) -> int:
     state = load_state(STATE_PATH)
     return state.get(str(chat_id), {}).get("general_topic_id", 1)
 
+def set_current_general_topic(chat_id: int, topic_id: int):
+    """Set the current General topic ID for a forum."""
+    state = load_state(STATE_PATH)
+    if str(chat_id) not in state:
+        state[str(chat_id)] = {}
+    state[str(chat_id)]["general_topic_id"] = topic_id
+    save_state(STATE_PATH, state)
+
 def get_daemon_state() -> dict:
     return load_state(DAEMON_STATE_PATH)
 
@@ -297,14 +305,68 @@ async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
         return False
 
 async def trigger_auto_thread(chat_id: int, topic_id: int, topic_name: str):
-    """Trigger auto-threading for a topic."""
-    from auto_thread import auto_thread
+    """Trigger auto-threading for a topic using the shared daemon client."""
+    from pyrogram.raw import functions
     
-    result = await auto_thread(
-        chat_id=chat_id,
-        current_topic_id=topic_id,
-        new_topic_name=topic_name
-    )
+    result = {"new_general_id": None, "renamed_topic_id": topic_id, "renamed_to": topic_name}
+    
+    async with get_pyrogram_client() as app:
+        peer = await app.resolve_peer(chat_id)
+        
+        # 1. Rename the current topic
+        try:
+            await app.invoke(
+                functions.channels.EditForumTopic(
+                    channel=peer,
+                    topic_id=topic_id,
+                    title=topic_name
+                )
+            )
+            print(f"✅ Renamed topic {topic_id} to: {topic_name}")
+        except Exception as e:
+            print(f"⚠️ Could not rename topic: {e}")
+        
+        # 2. Create new "General" topic
+        try:
+            create_result = await app.invoke(
+                functions.channels.CreateForumTopic(
+                    channel=peer,
+                    title="General",
+                    random_id=int.from_bytes(os.urandom(4), 'big'),
+                    icon_color=0x6FB9F0
+                )
+            )
+            
+            # Extract new topic ID
+            new_topic_id = None
+            for update in create_result.updates:
+                if hasattr(update, 'message') and hasattr(update.message, 'reply_to'):
+                    if hasattr(update.message.reply_to, 'forum_topic') and update.message.reply_to.forum_topic:
+                        new_topic_id = update.message.reply_to.reply_to_msg_id
+                        break
+            
+            if not new_topic_id:
+                # Fallback: find the newest General topic
+                topics_result = await app.invoke(
+                    functions.channels.GetForumTopics(
+                        channel=peer, offset_date=0, offset_id=0, offset_topic=0, limit=10
+                    )
+                )
+                for t in topics_result.topics:
+                    if getattr(t, 'title', '') == "General" and t.id != topic_id:
+                        new_topic_id = t.id
+                        break
+            
+            print(f"✅ Created new General topic with ID: {new_topic_id}")
+            result["new_general_id"] = new_topic_id
+            
+            # Update state
+            if new_topic_id:
+                set_current_general_topic(chat_id, new_topic_id)
+                
+        except Exception as e:
+            print(f"❌ Could not create new General topic: {e}")
+            traceback.print_exc()
     
     # Send welcome to new General with retry
     new_general_id = result.get("new_general_id")
