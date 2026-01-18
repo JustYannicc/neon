@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/clawd/skills/telegram-userbot
-ExecStart=/home/ubuntu/clawd/.venv/bin/python /home/ubuntu/clawd/skills/telegram-userbot/autothread_daemon.py --daemon --interval 5
+ExecStart=/home/ubuntu/clawd/.venv/bin/python /home/ubuntu/clawd/skills/telegram-userbot/autothread_daemon.py --daemon --interval 30
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

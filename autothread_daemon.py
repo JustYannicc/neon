@@ -25,6 +25,11 @@ DAEMON_STATE_PATH = CONFIG_DIR / "daemon_state.json"
 BOT_TOKEN = "8549153948:AAHfqzF7yxBULVB0KJ0dZQsCOqsSh9xHSkk"
 BOT_ID = 8549153948
 
+# Anti-race settings
+COOLDOWN_AFTER_CREATE_SECONDS = 120  # Wait 2 minutes after creating a topic before processing it
+COOLDOWN_AFTER_AUTOTHREAD_SECONDS = 60  # Wait 1 minute after auto-threading before next check
+MIN_MESSAGES_FOR_AUTOTHREAD = 2  # Minimum messages required (bot welcome + user message)
+
 # Forums to monitor (chat_id -> config)
 MONITORED_FORUMS = {
     -1003643461316: {
@@ -33,6 +38,9 @@ MONITORED_FORUMS = {
         "persistent_topics": [1]  # Topic IDs that should NOT be auto-threaded (e.g., "Main" chat)
     }
 }
+
+# Global lock to prevent concurrent runs
+_daemon_lock = asyncio.Lock()
 
 def load_state(path: Path) -> dict:
     if path.exists():
@@ -307,12 +315,12 @@ async def ensure_general_exists(chat_id: int) -> int:
                     topic_closed = getattr(topic, 'closed', False)
                     break
             
-            # Also check for any topic named "General"
-            general_topic = None
-            for topic in result.topics:
-                if getattr(topic, 'title', '') == "General" and not getattr(topic, 'closed', False):
-                    general_topic = topic
-                    break
+            # Also check for any topic named "General" - prefer the NEWEST one (highest ID)
+            general_topics = [
+                topic for topic in result.topics 
+                if getattr(topic, 'title', '') == "General" and not getattr(topic, 'closed', False)
+            ]
+            general_topic = max(general_topics, key=lambda t: t.id) if general_topics else None
             
             if topic_exists and not topic_closed:
                 return current_general  # All good
@@ -363,6 +371,16 @@ async def ensure_general_exists(chat_id: int) -> int:
                 state[str(chat_id)]["general_topic_id"] = new_topic_id
                 save_state(STATE_PATH, state)
                 
+                # Track creation time in daemon_state for anti-race protection
+                daemon_state = get_daemon_state()
+                if "created_topics" not in daemon_state:
+                    daemon_state["created_topics"] = {}
+                daemon_state["created_topics"][f"{chat_id}:{new_topic_id}"] = {
+                    "timestamp": datetime.now().isoformat(),
+                    "source": "ensure_general_exists"
+                }
+                save_daemon_state(daemon_state)
+                
                 # Send welcome
                 forum_config = MONITORED_FORUMS.get(chat_id, {})
                 welcome = forum_config.get("welcome_message", "👋 What's on your mind?")
@@ -385,6 +403,12 @@ async def ensure_general_exists(chat_id: int) -> int:
 
 async def check_and_autothread_forum(chat_id: int):
     """Check a forum and auto-thread if needed."""
+    # Use lock to prevent concurrent runs
+    async with _daemon_lock:
+        return await _check_and_autothread_forum_impl(chat_id)
+
+async def _check_and_autothread_forum_impl(chat_id: int):
+    """Internal implementation - must be called with _daemon_lock held."""
     # First ensure General exists
     current_general = await ensure_general_exists(chat_id)
     
@@ -401,20 +425,44 @@ async def check_and_autothread_forum(chat_id: int):
     if daemon_state.get("processed", {}).get(processed_key):
         return False  # Already processed this topic
     
-    # Anti-race safeguard: don't process topics that were just created
-    # Check if this topic was created in the last 30 seconds (as new_general from another)
+    # Anti-race safeguard 1: Check if this topic was recently created by ensure_general_exists
+    created_key = f"{chat_id}:{current_general}"
+    created_info = daemon_state.get("created_topics", {}).get(created_key)
+    if created_info:
+        try:
+            created_time = datetime.fromisoformat(created_info.get("timestamp", ""))
+            age_seconds = (datetime.now() - created_time).total_seconds()
+            if age_seconds < COOLDOWN_AFTER_CREATE_SECONDS:
+                print(f"[{datetime.now()}] Skipping topic {current_general} - created {age_seconds:.0f}s ago (cooldown: {COOLDOWN_AFTER_CREATE_SECONDS}s)")
+                return False
+        except:
+            pass
+    
+    # Anti-race safeguard 2: Check if this topic was created as new_general from auto-threading
     for key, data in daemon_state.get("processed", {}).items():
         if data.get("new_general") == current_general:
             created_at = data.get("timestamp", "")
             if created_at:
-                from datetime import datetime as dt
                 try:
-                    created_time = dt.fromisoformat(created_at)
-                    if (datetime.now() - created_time).total_seconds() < 30:
-                        print(f"[{datetime.now()}] Skipping topic {current_general} - too new (anti-race)")
+                    created_time = datetime.fromisoformat(created_at)
+                    age_seconds = (datetime.now() - created_time).total_seconds()
+                    if age_seconds < COOLDOWN_AFTER_CREATE_SECONDS:
+                        print(f"[{datetime.now()}] Skipping topic {current_general} - auto-threaded {age_seconds:.0f}s ago (cooldown: {COOLDOWN_AFTER_CREATE_SECONDS}s)")
                         return False
                 except:
                     pass
+    
+    # Anti-race safeguard 3: Global cooldown after any auto-threading
+    last_autothread = daemon_state.get("last_autothread_timestamp")
+    if last_autothread:
+        try:
+            last_time = datetime.fromisoformat(last_autothread)
+            age_seconds = (datetime.now() - last_time).total_seconds()
+            if age_seconds < COOLDOWN_AFTER_AUTOTHREAD_SECONDS:
+                print(f"[{datetime.now()}] Skipping - global cooldown: {age_seconds:.0f}s since last auto-thread (need {COOLDOWN_AFTER_AUTOTHREAD_SECONDS}s)")
+                return False
+        except:
+            pass
     
     # Check if there's a conversation in current General
     has_conversation = await check_for_user_message_mtproto(chat_id, current_general)
@@ -430,7 +478,7 @@ async def check_and_autothread_forum(chat_id: int):
         result = await trigger_auto_thread(chat_id, current_general, topic_name)
         print(f"[{datetime.now()}] Auto-threaded: {result}")
         
-        # Mark as processed
+        # Mark as processed and set global cooldown
         if "processed" not in daemon_state:
             daemon_state["processed"] = {}
         daemon_state["processed"][processed_key] = {
@@ -438,6 +486,20 @@ async def check_and_autothread_forum(chat_id: int):
             "renamed_to": topic_name,
             "new_general": result.get("new_general_id")
         }
+        
+        # Also track the new general in created_topics for consistent cooldown handling
+        new_general_id = result.get("new_general_id")
+        if new_general_id:
+            if "created_topics" not in daemon_state:
+                daemon_state["created_topics"] = {}
+            daemon_state["created_topics"][f"{chat_id}:{new_general_id}"] = {
+                "timestamp": datetime.now().isoformat(),
+                "source": "auto_thread"
+            }
+        
+        # Set global cooldown timestamp
+        daemon_state["last_autothread_timestamp"] = datetime.now().isoformat()
+        
         save_daemon_state(daemon_state)
         
         return True
