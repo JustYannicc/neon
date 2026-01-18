@@ -26,8 +26,8 @@ BOT_TOKEN = "8549153948:AAHfqzF7yxBULVB0KJ0dZQsCOqsSh9xHSkk"
 BOT_ID = 8549153948
 
 # Anti-race settings
-COOLDOWN_AFTER_CREATE_SECONDS = 120  # Wait 2 minutes after creating a topic before processing it
-COOLDOWN_AFTER_AUTOTHREAD_SECONDS = 60  # Wait 1 minute after auto-threading before next check
+COOLDOWN_AFTER_CREATE_SECONDS = 15  # Wait 15 seconds after creating a topic before processing
+COOLDOWN_AFTER_AUTOTHREAD_SECONDS = 10  # Wait 10 seconds after auto-threading before next check
 MIN_MESSAGES_FOR_AUTOTHREAD = 2  # Minimum messages required (bot welcome + user message)
 
 # Forums to monitor (chat_id -> config)
@@ -122,11 +122,15 @@ async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
                         raw_text = getattr(msg, 'message', None)
                         text = (raw_text[:50] if raw_text else '').strip()
                         
+                        # Check for media (voice, photo, video, document, sticker, etc.)
+                        has_media = hasattr(msg, 'media') and msg.media is not None
+                        
                         messages.append({
                             'from_id': from_id,
                             'date': msg.date,
                             'is_bot': from_id == BOT_ID,
-                            'text': text  # Already stripped, empty string if no text
+                            'text': text,  # Already stripped, empty string if no text
+                            'has_media': has_media  # Voice messages, photos, etc.
                         })
             
             # Sort by date (oldest first)
@@ -136,15 +140,15 @@ async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
             if len(messages) < 2:
                 return False
             
-            # Separate bot and user messages (user messages MUST have non-empty text)
+            # Separate bot and user messages (user messages MUST have text OR media like voice/photo)
             bot_messages = [m for m in messages if m['is_bot']]
-            user_messages = [m for m in messages if not m['is_bot'] and len(m.get('text', '')) > 0]
+            user_messages = [m for m in messages if not m['is_bot'] and (len(m.get('text', '')) > 0 or m.get('has_media', False))]
             
-            print(f"[{datetime.now()}] Topic {topic_id}: {len(messages)} msgs, {len(bot_messages)} bot, {len(user_messages)} user (with text)")
+            print(f"[{datetime.now()}] Topic {topic_id}: {len(messages)} msgs, {len(bot_messages)} bot, {len(user_messages)} user (with text/media)")
             
-            # Need at least 1 bot message (welcome) AND 1 user message WITH TEXT
+            # Need at least 1 bot message (welcome) AND 1 user message WITH TEXT OR MEDIA
             if not bot_messages or not user_messages:
-                print(f"[{datetime.now()}] Topic {topic_id}: no valid conversation (bot={len(bot_messages)}, user_with_text={len(user_messages)})")
+                print(f"[{datetime.now()}] Topic {topic_id}: no valid conversation (bot={len(bot_messages)}, user_with_content={len(user_messages)})")
                 return False
             
             # User message must come AFTER bot's welcome message
