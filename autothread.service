@@ -1,12 +1,12 @@
 [Unit]
-Description=Argon Auto-Threading Daemon
+Description=Neon Auto-Threading Daemon
 After=network.target
 
 [Service]
 Type=simple
-User=%i
-WorkingDirectory=/path/to/argon
-ExecStart=/path/to/argon/.venv/bin/python /path/to/argon/autothread_daemon.py --daemon --interval 15
+User=ubuntu
+WorkingDirectory=/home/ubuntu/clawd/skills/telegram-userbot
+ExecStart=/home/ubuntu/clawd/.venv/bin/python /home/ubuntu/clawd/skills/telegram-userbot/autothread_daemon.py --daemon --interval 5
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1

@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Session and config paths
 CONFIG_DIR = Path(__file__).parent
-SESSION_PATH = CONFIG_DIR / "argon_session"
+SESSION_PATH = CONFIG_DIR / "clawd_userbot"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 

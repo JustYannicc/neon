@@ -61,13 +61,12 @@ def get_recent_messages(chat_id: int, topic_id: int, limit: int = 10) -> list:
     # For now, we'll use a workaround - check updates.
     return []
 
-async def check_for_bot_response_mtproto(chat_id: int, topic_id: int) -> bool:
-    """Check if bot has responded to a USER message in this topic.
+async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
+    """Check if there's a USER message in this topic (triggers immediate auto-threading).
     
-    Returns True only if:
+    Returns True if:
     - There's at least one user message (not from bot)
-    - Bot has sent a response AFTER that user message
-    - Total messages > 1 (to exclude just welcome messages)
+    - It's not just a welcome message from the bot
     """
     from pyrogram import Client
     
@@ -76,7 +75,7 @@ async def check_for_bot_response_mtproto(chat_id: int, topic_id: int) -> bool:
         return False
     
     config = json.load(open(config_path))
-    session_path = CONFIG_DIR / "argon_session"
+    session_path = CONFIG_DIR / "argon_daemon"
     
     app = Client(
         str(session_path),
@@ -120,28 +119,13 @@ async def check_for_bot_response_mtproto(chat_id: int, topic_id: int) -> bool:
             # Sort by date (oldest first)
             messages.sort(key=lambda x: x['date'])
             
-            # Need at least 2 messages
-            if len(messages) < 2:
-                return False
-            
-            # Check pattern: user message followed by bot response
-            # Skip if only message is a welcome-like bot message
+            # Check for user messages (not from bot)
             user_messages = [m for m in messages if not m['is_bot']]
-            bot_messages = [m for m in messages if m['is_bot']]
             
             if not user_messages:
-                return False  # No user messages
+                return False  # No user messages - just welcome
             
-            if not bot_messages:
-                return False  # No bot responses
-            
-            # Check if bot responded AFTER a user message
-            first_user_time = min(m['date'] for m in user_messages)
-            bot_after_user = any(m['date'] > first_user_time for m in bot_messages)
-            
-            if not bot_after_user:
-                return False  # Bot message was before user (just welcome)
-            
+            # Has at least one user message - trigger immediate auto-threading!
             return True
             
         except Exception as e:
@@ -177,12 +161,12 @@ async def trigger_auto_thread(chat_id: int, topic_id: int, topic_name: str):
     return result
 
 async def generate_topic_name(chat_id: int, topic_id: int) -> str:
-    """Generate a topic name from conversation content."""
+    """Generate a smart topic name from conversation content."""
     from pyrogram import Client
     
     config_path = CONFIG_DIR / "config.json"
     config = json.load(open(config_path))
-    session_path = CONFIG_DIR / "argon_session"
+    session_path = CONFIG_DIR / "argon_daemon"
     
     app = Client(
         str(session_path),
@@ -202,28 +186,64 @@ async def generate_topic_name(chat_id: int, topic_id: int) -> str:
                     offset_id=0,
                     offset_date=0,
                     add_offset=0,
-                    limit=5,
+                    limit=10,
                     max_id=0,
                     min_id=0,
                     hash=0
                 )
             )
             
-            # Get first user message
-            for msg in reversed(result.messages):
-                if hasattr(msg, 'message') and msg.message:
-                    from_id = getattr(getattr(msg, 'from_id', None), 'user_id', None)
-                    if from_id and from_id != BOT_ID:
-                        text = msg.message[:40]
-                        if len(msg.message) > 40:
-                            text = text[:37] + "..."
-                        return text
+            # Collect text messages for analysis
+            user_texts = []
+            bot_texts = []
             
-            return f"Conversation {datetime.now().strftime('%m/%d %H:%M')}"
+            for msg in result.messages:
+                text = getattr(msg, 'message', None)
+                if text:
+                    from_id = getattr(getattr(msg, 'from_id', None), 'user_id', None)
+                    if from_id == BOT_ID:
+                        bot_texts.append(text.strip())
+                    elif from_id:
+                        user_texts.append(text.strip())
+            
+            # Smart title extraction
+            # 1. Check user messages for clear topic/question
+            for text in user_texts:
+                clean = text.lower().strip()
+                # Skip greetings
+                if clean in ['hi', 'hello', 'hey', 'yo', '?', 'test']:
+                    continue
+                # Questions make good titles
+                if '?' in text:
+                    q = text.split('?')[0].strip() + '?'
+                    return q[:35] + ('...' if len(q) > 35 else '')
+                # Substantial text
+                if len(text) > 10:
+                    first = text.split('\n')[0].split('.')[0].strip()
+                    if len(first) > 5:
+                        return first[:35] + ('...' if len(first) > 35 else '')
+            
+            # 2. Extract topic from bot response
+            for text in bot_texts:
+                if text.lower().startswith(('hey', 'hi', 'hello', '👋')):
+                    continue
+                # Look for markdown headers or clear topics
+                for line in text.split('\n'):
+                    line = line.strip()
+                    if line.startswith('**') and '**' in line[2:]:
+                        topic = line.split('**')[1]
+                        return topic[:35] + ('...' if len(topic) > 35 else '')
+                    if len(line) > 15 and ':' in line[:30]:
+                        topic = line.split(':')[0].strip()
+                        if len(topic) > 5:
+                            return topic[:35]
+            
+            # 3. Fallback
+            return f"Chat {datetime.now().strftime('%b %d %H:%M')}"
             
         except Exception as e:
-            print(f"Error getting topic name: {e}")
-            return f"Conversation {datetime.now().strftime('%m/%d %H:%M')}"
+            print(f"[{datetime.now()}] Title generation error: {e}")
+            return f"Chat {datetime.now().strftime('%b %d %H:%M')}"
 
 async def ensure_general_exists(chat_id: int) -> int:
     """Ensure a General topic exists. Create one if missing/closed."""
@@ -232,7 +252,7 @@ async def ensure_general_exists(chat_id: int) -> int:
     
     config_path = CONFIG_DIR / "config.json"
     config = json.load(open(config_path))
-    session_path = CONFIG_DIR / "argon_session"
+    session_path = CONFIG_DIR / "argon_daemon"
     
     current_general = get_current_general(chat_id)
     
@@ -361,7 +381,7 @@ async def check_and_autothread_forum(chat_id: int):
         return False  # Already processed this topic
     
     # Check if there's a conversation in current General
-    has_conversation = await check_for_bot_response_mtproto(chat_id, current_general)
+    has_conversation = await check_for_user_message_mtproto(chat_id, current_general)
     
     if has_conversation:
         print(f"[{datetime.now()}] Conversation detected in General (topic {current_general})")

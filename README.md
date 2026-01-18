@@ -157,15 +157,32 @@ python autothread_daemon.py --once
 
 ## Auto-Updates
 
-To automatically pull updates:
+Neon can automatically pull updates from GitHub. Two options:
 
+### Option 1: Cron (hourly)
 ```bash
 # Add to crontab
 crontab -e
 
 # Add this line (checks hourly)
-0 * * * * cd /path/to/skills/argon && git pull --quiet
+0 * * * * cd /path/to/skills/neon && git pull origin master --quiet 2>/dev/null
 ```
+
+### Option 2: Systemd timer (more frequent)
+```bash
+# Create /etc/systemd/system/neon-update.timer
+[Unit]
+Description=Neon auto-update timer
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+After a PR is merged, updates will be pulled automatically on the next check.
 
 ## Troubleshooting
 

@@ -1,4 +1,4 @@
-# Sensitive
+# Sensitive files
 *.session
 *.session-journal
 config.json
@@ -9,3 +9,7 @@ daemon_state.json
 __pycache__/
 *.pyc
 .venv/
+
+# Logs
+*.log
+unknown_errors.txt

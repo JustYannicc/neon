@@ -17,7 +17,7 @@ from typing import Optional
 
 # Paths
 CONFIG_DIR = Path(__file__).parent
-SESSION_PATH = CONFIG_DIR / "argon_session"
+SESSION_PATH = CONFIG_DIR / "argon_daemon"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "forum_state.json"
 
