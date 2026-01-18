@@ -110,11 +110,15 @@ async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
                 if hasattr(msg, 'from_id') and hasattr(msg, 'date'):
                     from_id = getattr(msg.from_id, 'user_id', None)
                     if from_id:
+                        # Safely extract text - handle None and empty cases
+                        raw_text = getattr(msg, 'message', None)
+                        text = (raw_text[:50] if raw_text else '').strip()
+                        
                         messages.append({
                             'from_id': from_id,
                             'date': msg.date,
                             'is_bot': from_id == BOT_ID,
-                            'text': getattr(msg, 'message', '')[:50] if hasattr(msg, 'message') else ''
+                            'text': text  # Already stripped, empty string if no text
                         })
             
             # Sort by date (oldest first)
@@ -124,12 +128,15 @@ async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
             if len(messages) < 2:
                 return False
             
-            # Separate bot and user messages
+            # Separate bot and user messages (user messages MUST have non-empty text)
             bot_messages = [m for m in messages if m['is_bot']]
-            user_messages = [m for m in messages if not m['is_bot'] and m.get('text', '').strip()]
+            user_messages = [m for m in messages if not m['is_bot'] and len(m.get('text', '')) > 0]
             
-            # Need at least 1 bot message (welcome) AND 1 user message
+            print(f"[{datetime.now()}] Topic {topic_id}: {len(messages)} msgs, {len(bot_messages)} bot, {len(user_messages)} user (with text)")
+            
+            # Need at least 1 bot message (welcome) AND 1 user message WITH TEXT
             if not bot_messages or not user_messages:
+                print(f"[{datetime.now()}] Topic {topic_id}: no valid conversation (bot={len(bot_messages)}, user_with_text={len(user_messages)})")
                 return False
             
             # User message must come AFTER bot's welcome message
