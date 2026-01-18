@@ -62,11 +62,12 @@ def get_recent_messages(chat_id: int, topic_id: int, limit: int = 10) -> list:
     return []
 
 async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
-    """Check if there's a USER message in this topic (triggers immediate auto-threading).
+    """Check if there's a valid conversation in this topic.
     
-    Returns True if:
-    - There's at least one user message (not from bot)
-    - It's not just a welcome message from the bot
+    Returns True only if:
+    - At least 2 messages total
+    - At least 1 bot message (welcome)
+    - At least 1 user message AFTER the bot's welcome
     """
     from pyrogram import Client
     
@@ -119,13 +120,26 @@ async def check_for_user_message_mtproto(chat_id: int, topic_id: int) -> bool:
             # Sort by date (oldest first)
             messages.sort(key=lambda x: x['date'])
             
-            # Check for user messages (not from bot)
-            user_messages = [m for m in messages if not m['is_bot']]
+            # Need at least 2 messages total
+            if len(messages) < 2:
+                return False
             
-            if not user_messages:
-                return False  # No user messages - just welcome
+            # Separate bot and user messages
+            bot_messages = [m for m in messages if m['is_bot']]
+            user_messages = [m for m in messages if not m['is_bot'] and m.get('text', '').strip()]
             
-            # Has at least one user message - trigger immediate auto-threading!
+            # Need at least 1 bot message (welcome) AND 1 user message
+            if not bot_messages or not user_messages:
+                return False
+            
+            # User message must come AFTER bot's welcome message
+            first_bot_time = min(m['date'] for m in bot_messages)
+            user_after_bot = any(m['date'] > first_bot_time for m in user_messages)
+            
+            if not user_after_bot:
+                return False  # User message came before bot welcome (shouldn't happen)
+            
+            print(f"[{datetime.now()}] Valid conversation: {len(bot_messages)} bot + {len(user_messages)} user msgs in topic {topic_id}")
             return True
             
         except Exception as e:
@@ -379,6 +393,21 @@ async def check_and_autothread_forum(chat_id: int):
     processed_key = f"{chat_id}:{current_general}"
     if daemon_state.get("processed", {}).get(processed_key):
         return False  # Already processed this topic
+    
+    # Anti-race safeguard: don't process topics that were just created
+    # Check if this topic was created in the last 30 seconds (as new_general from another)
+    for key, data in daemon_state.get("processed", {}).items():
+        if data.get("new_general") == current_general:
+            created_at = data.get("timestamp", "")
+            if created_at:
+                from datetime import datetime as dt
+                try:
+                    created_time = dt.fromisoformat(created_at)
+                    if (datetime.now() - created_time).total_seconds() < 30:
+                        print(f"[{datetime.now()}] Skipping topic {current_general} - too new (anti-race)")
+                        return False
+                except:
+                    pass
     
     # Check if there's a conversation in current General
     has_conversation = await check_for_user_message_mtproto(chat_id, current_general)
