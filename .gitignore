@@ -1,0 +1,11 @@
+# Sensitive
+*.session
+*.session-journal
+config.json
+forum_state.json
+daemon_state.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/

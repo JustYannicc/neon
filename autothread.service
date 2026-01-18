@@ -1,0 +1,15 @@
+[Unit]
+Description=Argon Auto-Threading Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/path/to/argon
+ExecStart=/path/to/argon/.venv/bin/python /path/to/argon/autothread_daemon.py --daemon --interval 15
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
